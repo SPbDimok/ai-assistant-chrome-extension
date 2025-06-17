@@ -1,0 +1,22 @@
+
+# Playwright MCP Server Dependencies
+
+# MCP framework
+mcp>=0.1.0
+
+# Browser automation
+playwright>=1.40.0
+
+# Async support
+asyncio
+
+# Logging
+logging
+
+# Standard library (no need to install)
+# json
+# os
+# sys
+# traceback
+# datetime
+# typing

@@ -1,0 +1,175 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Assistant - Настройки</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="options-container">
+    <div class="header">
+      <h1>🤖 AI Assistant - Настройки</h1>
+      <p>Настройте подключение к вашему LLM-серверу и MCP-серверам</p>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-title">🌐 Подключение к серверу</div>
+      <div class="form-group">
+        <label for="server-url">URL сервера LLM-агента:</label>
+        <input type="url" id="server-url" placeholder="http://localhost:8000" />
+        <div class="help-text">
+          Введите URL вашего сервера с LLM-агентом. По умолчанию: http://localhost:8000
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="api-key">API ключ (если требуется):</label>
+        <input type="password" id="api-key" placeholder="Введите API ключ..." />
+        <div class="help-text">
+          Опциональный API ключ для аутентификации на сервере
+        </div>
+      </div>
+
+      <div class="form-group">
+        <button id="test-connection" class="btn primary">🔍 Проверить соединение</button>
+        <div id="connection-result" class="connection-status"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-title">🔧 MCP серверы</div>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="mcp-enabled" />
+          <span class="checkmark"></span>
+          Включить поддержку MCP серверов
+        </label>
+        <div class="help-text">
+          Model Context Protocol позволяет LLM взаимодействовать с внешними инструментами
+        </div>
+      </div>
+
+      <div id="mcp-settings" class="mcp-settings-container">
+        <div class="mcp-server-list">
+          <div class="subsection-title">Список MCP серверов:</div>
+          <div id="mcp-servers">
+            <!-- Серверы будут добавлены динамически -->
+          </div>
+          <button id="add-mcp-server" class="btn secondary">➕ Добавить MCP сервер</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-title">⚙️ Общие настройки</div>
+
+      <div class="form-group">
+        <label for="response-language">Язык ответов:</label>
+        <select id="response-language">
+          <option value="ru">Русский</option>
+          <option value="en">English</option>
+          <option value="auto">Автоопределение</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="auto-analyze" />
+          <span class="checkmark"></span>
+          Автоматический анализ страниц
+        </label>
+        <div class="help-text">
+          Автоматически анализировать страницы при их загрузке
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="debug-mode" />
+          <span class="checkmark"></span>
+          Режим отладки
+        </label>
+        <div class="help-text">
+          Включить подробное логирование в консоли разработчика
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-title">💡 Быстрые команды</div>
+      <div class="form-group">
+        <label for="hotkey-toggle">Горячая клавиша для вызова панели:</label>
+        <input type="text" id="hotkey-toggle" readonly value="Ctrl+Shift+A" />
+      </div>
+
+      <div class="form-group">
+        <label for="hotkey-analyze">Горячая клавиша для анализа элемента:</label>
+        <input type="text" id="hotkey-analyze" readonly value="Alt+Click" />
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="save-settings" class="btn primary large">💾 Сохранить настройки</button>
+      <button id="reset-settings" class="btn secondary">🔄 Сбросить к умолчаниям</button>
+      <div id="save-status" class="save-status"></div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-title">ℹ️ Информация</div>
+      <div class="info-grid">
+        <div class="info-item">
+          <strong>Версия расширения:</strong>
+          <span id="extension-version">1.0.0</span>
+        </div>
+        <div class="info-item">
+          <strong>Статус соединения:</strong>
+          <span id="connection-info">Не подключено</span>
+        </div>
+        <div class="info-item">
+          <strong>Активных MCP серверов:</strong>
+          <span id="mcp-count">0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно для добавления MCP сервера -->
+  <div id="add-mcp-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Добавить MCP сервер</h3>
+        <span class="close" id="close-modal">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="mcp-name">Название сервера:</label>
+          <input type="text" id="mcp-name" placeholder="Например: Playwright Server" />
+        </div>
+        <div class="form-group">
+          <label for="mcp-command">Команда запуска:</label>
+          <input type="text" id="mcp-command" placeholder="npx @executeautomation/playwright-mcp-server" />
+        </div>
+        <div class="form-group">
+          <label for="mcp-args">Аргументы (необязательно):</label>
+          <input type="text" id="mcp-args" placeholder="--port 3000" />
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="mcp-auto-start" checked />
+            <span class="checkmark"></span>
+            Автоматически запускать
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="save-mcp-server" class="btn primary">Сохранить</button>
+        <button id="cancel-mcp" class="btn secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
