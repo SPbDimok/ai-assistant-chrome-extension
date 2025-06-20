@@ -1,128 +1,126 @@
+// AI Assistant - Service Worker v0.1.1
 
-// Background Service Worker для Chrome Extension
-class AIAssistantBackground {
+class ConnectionManager {
   constructor() {
-    this.serverUrl = null;
-    this.mcpEnabled = false;
     this.websocket = null;
-    this.keepAliveInterval = null;
-
-    this.initializeListeners();
-    this.loadSettings();
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnect = 5;
+    this.reconnectTimeout = null;
   }
 
-  initializeListeners() {
-    // Слушатель установки расширения
-    chrome.runtime.onInstalled.addListener(() => {
-      console.log('AI Assistant Extension installed');
-    });
-
-    // Слушатель сообщений от content scripts и popup
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      this.handleMessage(request, sender, sendResponse);
-      return true; // для асинхронных ответов
-    });
-
-    // Слушатель изменений настроек
-    chrome.storage.onChanged.addListener((changes, namespace) => {
-      if (namespace === 'sync') {
-        this.handleSettingsChange(changes);
-      }
-    });
-  }
-
-  async loadSettings() {
-    const settings = await chrome.storage.sync.get(['serverUrl', 'mcpEnabled']);
-    this.serverUrl = settings.serverUrl || 'http://localhost:8000';
-    this.mcpEnabled = settings.mcpEnabled || false;
-
-    if (this.serverUrl) {
-      this.connectToServer();
-    }
-  }
-
-  handleSettingsChange(changes) {
-    if (changes.serverUrl) {
-      this.serverUrl = changes.serverUrl.newValue;
-      this.reconnectToServer();
-    }
-    if (changes.mcpEnabled) {
-      this.mcpEnabled = changes.mcpEnabled.newValue;
-    }
-  }
-
-  async handleMessage(request, sender, sendResponse) {
+  async connect() {
     try {
-      switch (request.action) {
-        case 'sendQuery':
-          const response = await this.sendToLLMServer(request.query, request.context);
-          sendResponse({ success: true, data: response });
-          break;
-
-        case 'analyzeElement':
-          const analysis = await this.analyzePageElement(request.elementData);
-          sendResponse({ success: true, data: analysis });
-          break;
-
-        case 'executeMCPCommand':
-          if (this.mcpEnabled) {
-            const result = await this.executeMCPCommand(request.command, request.params);
-            sendResponse({ success: true, data: result });
-          } else {
-            sendResponse({ success: false, error: 'MCP servers disabled' });
-          }
-          break;
-
-        default:
-          sendResponse({ success: false, error: 'Unknown action' });
+      // Если соединение уже существует, прерываем процесс
+      if (this.websocket && (this.websocket.readyState === WebSocket.CONNECTING || 
+                             this.websocket.readyState === WebSocket.OPEN)) {
+        return;
       }
+
+      // Создаем новое соединение
+      // Используем глобальную переменную для хранения WebSocket соединения
+      // Чтобы избежать проблем с garbage collection в Service Worker
+      this.setupWebSocket();
     } catch (error) {
-      console.error('Error handling message:', error);
-      sendResponse({ success: false, error: error.message });
+      // Тихая обработка ошибок, без логирования в консоль
+      this.handleConnectionError();
     }
   }
 
-  connectToServer() {
-    if (this.websocket) {
-      this.websocket.close();
+  setupWebSocket() {
+    try {
+      // Тихая обработка ошибок при создании WebSocket
+      this.websocket = new WebSocket('ws://localhost:8000/ws');
+
+      // Настраиваем обработчики событий WebSocket
+      this.websocket.addEventListener('open', () => {
+        this.handleConnectSuccess();
+      });
+
+      this.websocket.addEventListener('error', () => {
+        // Тихая обработка ошибок соединения, без логирования в консоль
+        this.handleConnectionError();
+      });
+
+      this.websocket.addEventListener('close', () => {
+        this.handleConnectionClose();
+      });
+
+      this.websocket.addEventListener('message', (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          this.handleMessage(data);
+        } catch (error) {
+          // Тихая обработка ошибок сообщений
+        }
+      });
+    } catch (error) {
+      // Тихая обработка ошибок при создании WebSocket
+      this.handleConnectionError();
+    }
+  }
+
+  handleConnectSuccess() {
+    this.isConnected = true;
+    this.reconnectAttempts = 0;
+    this.updateBadgeStatus(true);
+    this.notifyConnectionStatus(true);
+
+    // Запускаем механизм поддержания соединения
+    this.startKeepAlive();
+  }
+
+  handleConnectionError() {
+    this.isConnected = false;
+    this.updateBadgeStatus(false);
+    this.notifyConnectionStatus(false);
+
+    // Попытка переподключения с экспоненциальной задержкой
+    this.scheduleReconnect();
+  }
+
+  handleConnectionClose() {
+    this.isConnected = false;
+    this.updateBadgeStatus(false);
+    this.notifyConnectionStatus(false);
+
+    // Очищаем keepalive интервал
+    this.stopKeepAlive();
+
+    // Попытка переподключения
+    this.scheduleReconnect();
+  }
+
+  scheduleReconnect() {
+    // Очищаем предыдущий таймер переподключения
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
     }
 
-    try {
-      const wsUrl = this.serverUrl.replace('http', 'ws') + '/ws';
-      this.websocket = new WebSocket(wsUrl);
+    // Проверяем лимит попыток переподключения
+    if (this.reconnectAttempts < this.maxReconnect) {
+      this.reconnectAttempts++;
 
-      this.websocket.onopen = () => {
-        console.log('Connected to LLM server');
-        this.startKeepAlive();
-      };
+      // Экспоненциальная задержка: 2^n секунд, но не более 30 секунд
+      const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, 30000);
 
-      this.websocket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        this.handleServerMessage(data);
-      };
-
-      this.websocket.onclose = () => {
-        console.log('Disconnected from LLM server');
-        this.stopKeepAlive();
-        // Переподключение через 5 секунд
-        setTimeout(() => this.connectToServer(), 5000);
-      };
-
-      this.websocket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-
-    } catch (error) {
-      console.error('Failed to connect to server:', error);
+      this.reconnectTimeout = setTimeout(() => {
+        this.connect();
+      }, delay);
     }
   }
 
   startKeepAlive() {
     this.keepAliveInterval = setInterval(() => {
-      if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-        this.websocket.send(JSON.stringify({ type: 'keepalive' }));
+      try {
+        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+          // Отправляем пинг для поддержания соединения
+          this.websocket.send(JSON.stringify({ type: "ping" }));
+        }
+      } catch (error) {
+        // Тихая обработка ошибок keepalive
       }
-    }, 20000); // каждые 20 секунд
+    }, 30000); // Каждые 30 секунд
   }
 
   stopKeepAlive() {
@@ -132,118 +130,99 @@ class AIAssistantBackground {
     }
   }
 
-  reconnectToServer() {
-    this.connectToServer();
+  updateBadgeStatus(connected) {
+    try {
+      chrome.action.setBadgeBackgroundColor({
+        color: connected ? '#4CAF50' : '#F44336'
+      });
+      chrome.action.setBadgeText({text: ' '});
+    } catch (error) {
+      // Тихая обработка ошибок
+    }
   }
 
-  async sendToLLMServer(query, context = {}) {
-    const requestData = {
-      query: query,
-      context: context,
-      timestamp: Date.now(),
-      mcpEnabled: this.mcpEnabled
-    };
-
-    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-      // Отправляем через WebSocket
-      return new Promise((resolve, reject) => {
-        const requestId = Date.now().toString();
-        requestData.requestId = requestId;
-
-        const timeout = setTimeout(() => {
-          reject(new Error('Request timeout'));
-        }, 30000);
-
-        const responseHandler = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.requestId === requestId) {
-            clearTimeout(timeout);
-            this.websocket.removeEventListener('message', responseHandler);
-            resolve(data);
-          }
-        };
-
-        this.websocket.addEventListener('message', responseHandler);
-        this.websocket.send(JSON.stringify(requestData));
+  notifyConnectionStatus(connected) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'CONNECTION_STATUS_UPDATE',
+        connected: connected
+      }).catch(() => {
+        // Тихая обработка ошибок отправки сообщения
       });
-    } else {
-      // Fallback на HTTP
-      const response = await fetch(this.serverUrl + '/api/query', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestData)
-      });
+    } catch (error) {
+      // Тихая обработка ошибок
+    }
+  }
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+  handleMessage(data) {
+    try {
+      // Отправляем сообщение в sidepanel
+      chrome.runtime.sendMessage({
+        type: 'MESSAGE_FROM_SERVER',
+        message: data
+      }).catch(() => {
+        // Тихая обработка ошибок отправки сообщения
+      });
+    } catch (error) {
+      // Тихая обработка ошибок
+    }
+  }
+
+  async sendMessage(message) {
+    try {
+      if (!this.isConnected || !this.websocket) {
+        return { success: false, error: 'Нет подключения к серверу' };
       }
 
-      return await response.json();
+      this.websocket.send(JSON.stringify(message));
+      return { success: true };
+    } catch (error) {
+      // Тихая обработка ошибок
+      return { success: false, error: 'Ошибка отправки сообщения' };
     }
-  }
-
-  async analyzePageElement(elementData) {
-    return await this.sendToLLMServer(
-      `Analyze this webpage element: ${elementData.tagName} with text "${elementData.text}"`,
-      { elementData }
-    );
-  }
-
-  async executeMCPCommand(command, params) {
-    const requestData = {
-      action: 'mcp_command',
-      command: command,
-      params: params
-    };
-
-    const response = await fetch(this.serverUrl + '/api/mcp', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestData)
-    });
-
-    if (!response.ok) {
-      throw new Error(`MCP command failed: ${response.status}`);
-    }
-
-    return await response.json();
-  }
-
-  handleServerMessage(data) {
-    // Обработка сообщений от сервера
-    switch (data.type) {
-      case 'notification':
-        this.showNotification(data.message);
-        break;
-      case 'update':
-        this.broadcastToContentScripts(data);
-        break;
-    }
-  }
-
-  showNotification(message) {
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'icons/icon32.png',
-      title: 'AI Assistant',
-      message: message
-    });
-  }
-
-  broadcastToContentScripts(data) {
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach(tab => {
-        chrome.tabs.sendMessage(tab.id, data).catch(() => {
-          // Игнорируем ошибки для неактивных вкладок
-        });
-      });
-    });
   }
 }
 
-// Инициализация
-const aiAssistant = new AIAssistantBackground();
+// Создаем экземпляр менеджера соединений
+const connectionManager = new ConnectionManager();
+
+// Обработка сообщений от sidepanel
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  try {
+    switch (message.type) {
+      case 'CHECK_CONNECTION_STATUS':
+        sendResponse({ connected: connectionManager.isConnected });
+        break;
+      case 'RETRY_CONNECTION':
+        connectionManager.connect();
+        sendResponse({ success: true });
+        break;
+      case 'SEND_MESSAGE':
+        connectionManager.sendMessage(message.data)
+          .then(result => sendResponse(result))
+          .catch(() => sendResponse({ success: false, error: 'Ошибка обработки сообщения' }));
+        return true; // Для асинхронного ответа
+      default:
+        break;
+    }
+  } catch (error) {
+    // Тихая обработка ошибок
+    sendResponse({ success: false, error: 'Ошибка обработки сообщения' });
+  }
+  return true; // Для асинхронного ответа
+});
+
+// Инициализация при установке/обновлении расширения
+chrome.runtime.onInstalled.addListener(() => {
+  // Устанавливаем начальный статус
+  connectionManager.updateBadgeStatus(false);
+
+  // Первая попытка подключения
+  connectionManager.connect();
+});
+
+// Инициализация при запуске браузера
+chrome.runtime.onStartup.addListener(() => {
+  // Первая попытка подключения
+  connectionManager.connect();
+});
