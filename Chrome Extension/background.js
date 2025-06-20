@@ -1,124 +1,118 @@
-// AI Assistant - Service Worker v0.1.1
+// AI Assistant Background Service Worker v0.1.2
 
 class ConnectionManager {
   constructor() {
     this.websocket = null;
     this.isConnected = false;
     this.reconnectAttempts = 0;
-    this.maxReconnect = 5;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 2000;
+    this.keepAliveInterval = null;
     this.reconnectTimeout = null;
+    this.currentServerUrl = 'ws://localhost:8000/ws';
   }
 
-  async connect() {
+  async init() {
+    // Загружаем настройки из storage
     try {
-      // Если соединение уже существует, прерываем процесс
-      if (this.websocket && (this.websocket.readyState === WebSocket.CONNECTING || 
-                             this.websocket.readyState === WebSocket.OPEN)) {
-        return;
+      const result = await chrome.storage.sync.get(['serverUrl']);
+      if (result.serverUrl) {
+        this.currentServerUrl = result.serverUrl;
       }
-
-      // Создаем новое соединение
-      // Используем глобальную переменную для хранения WebSocket соединения
-      // Чтобы избежать проблем с garbage collection в Service Worker
-      this.setupWebSocket();
     } catch (error) {
-      // Тихая обработка ошибок, без логирования в консоль
-      this.handleConnectionError();
+      // Тихая обработка ошибок
     }
+    
+    this.connect();
   }
 
-  setupWebSocket() {
+  connect() {
+    if (this.websocket) return;
+
     try {
-      // Тихая обработка ошибок при создании WebSocket
-      this.websocket = new WebSocket('ws://localhost:8000/ws');
-
-      // Настраиваем обработчики событий WebSocket
-      this.websocket.addEventListener('open', () => {
-        this.handleConnectSuccess();
-      });
-
-      this.websocket.addEventListener('error', () => {
-        // Тихая обработка ошибок соединения, без логирования в консоль
-        this.handleConnectionError();
-      });
-
-      this.websocket.addEventListener('close', () => {
+      this.websocket = new WebSocket(this.currentServerUrl);
+      
+      this.websocket.onopen = () => {
+        this.handleConnectionSuccess();
+      };
+      
+      this.websocket.onmessage = (event) => {
+        this.handleMessage(event);
+      };
+      
+      this.websocket.onclose = () => {
         this.handleConnectionClose();
-      });
+      };
+      
+      this.websocket.onerror = () => {
+        this.handleConnectionError();
+      };
 
-      this.websocket.addEventListener('message', (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          this.handleMessage(data);
-        } catch (error) {
-          // Тихая обработка ошибок сообщений
-        }
-      });
     } catch (error) {
-      // Тихая обработка ошибок при создании WebSocket
       this.handleConnectionError();
     }
   }
 
-  handleConnectSuccess() {
+  handleConnectionSuccess() {
     this.isConnected = true;
     this.reconnectAttempts = 0;
     this.updateBadgeStatus(true);
-    this.notifyConnectionStatus(true);
-
-    // Запускаем механизм поддержания соединения
     this.startKeepAlive();
+    this.notifyUI('CONNECTION_STATUS_UPDATE', { connected: true });
   }
 
   handleConnectionError() {
     this.isConnected = false;
+    this.websocket = null;
     this.updateBadgeStatus(false);
-    this.notifyConnectionStatus(false);
-
-    // Попытка переподключения с экспоненциальной задержкой
+    this.stopKeepAlive();
     this.scheduleReconnect();
   }
 
   handleConnectionClose() {
     this.isConnected = false;
+    this.websocket = null;
     this.updateBadgeStatus(false);
-    this.notifyConnectionStatus(false);
-
-    // Очищаем keepalive интервал
     this.stopKeepAlive();
-
-    // Попытка переподключения
     this.scheduleReconnect();
   }
 
+  handleMessage(event) {
+    try {
+      const message = JSON.parse(event.data);
+      this.notifyUI('MESSAGE_FROM_SERVER', { message });
+    } catch (error) {
+      // Тихая обработка ошибок парсинга
+    }
+  }
+
   scheduleReconnect() {
-    // Очищаем предыдущий таймер переподключения
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      return;
+    }
+
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
 
-    // Проверяем лимит попыток переподключения
-    if (this.reconnectAttempts < this.maxReconnect) {
+    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000);
+    
+    this.reconnectTimeout = setTimeout(() => {
       this.reconnectAttempts++;
-
-      // Экспоненциальная задержка: 2^n секунд, но не более 30 секунд
-      const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, 30000);
-
-      this.reconnectTimeout = setTimeout(() => {
-        this.connect();
-      }, delay);
-    }
+      this.connect();
+    }, delay);
   }
 
   startKeepAlive() {
+    this.stopKeepAlive();
+    
     this.keepAliveInterval = setInterval(() => {
-      try {
-        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-          // Отправляем пинг для поддержания соединения
-          this.websocket.send(JSON.stringify({ type: "ping" }));
+      if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+        try {
+          this.websocket.send(JSON.stringify({ type: 'keepalive' }));
+        } catch (error) {
+          // Тихая обработка ошибок
         }
-      } catch (error) {
-        // Тихая обработка ошибок keepalive
       }
     }, 30000); // Каждые 30 секунд
   }
@@ -135,94 +129,213 @@ class ConnectionManager {
       chrome.action.setBadgeBackgroundColor({
         color: connected ? '#4CAF50' : '#F44336'
       });
-      chrome.action.setBadgeText({text: ' '});
+      chrome.action.setBadgeText({ text: ' ' });
     } catch (error) {
       // Тихая обработка ошибок
     }
   }
 
-  notifyConnectionStatus(connected) {
+  notifyUI(type, data) {
     try {
-      chrome.runtime.sendMessage({
-        type: 'CONNECTION_STATUS_UPDATE',
-        connected: connected
-      }).catch(() => {
-        // Тихая обработка ошибок отправки сообщения
-      });
-    } catch (error) {
-      // Тихая обработка ошибок
-    }
-  }
-
-  handleMessage(data) {
-    try {
-      // Отправляем сообщение в sidepanel
-      chrome.runtime.sendMessage({
-        type: 'MESSAGE_FROM_SERVER',
-        message: data
-      }).catch(() => {
-        // Тихая обработка ошибок отправки сообщения
-      });
+      chrome.runtime.sendMessage({ type, ...data });
     } catch (error) {
       // Тихая обработка ошибок
     }
   }
 
   async sendMessage(message) {
-    try {
-      if (!this.isConnected || !this.websocket) {
-        return { success: false, error: 'Нет подключения к серверу' };
+    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+      try {
+        this.websocket.send(JSON.stringify(message));
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: 'Failed to send message' };
       }
+    } else {
+      // Fallback на HTTP
+      return await this.sendViaHTTP(message);
+    }
+  }
 
-      this.websocket.send(JSON.stringify(message));
-      return { success: true };
+  async sendViaHTTP(message) {
+    try {
+      const httpUrl = this.currentServerUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+      const response = await fetch(`${httpUrl}/api/message`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(message)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        return { success: true, data: result };
+      } else {
+        return { success: false, error: 'HTTP request failed' };
+      }
+    } catch (error) {
+      return { success: false, error: 'Network error' };
+    }
+  }
+
+  async updateServerUrl(newUrl) {
+    this.currentServerUrl = newUrl;
+    
+    // Закрываем текущее соединение
+    if (this.websocket) {
+      this.websocket.close();
+      this.websocket = null;
+    }
+    
+    this.stopKeepAlive();
+    this.reconnectAttempts = 0;
+    
+    // Подключаемся к новому серверу
+    this.connect();
+    
+    // Сохраняем в storage
+    try {
+      await chrome.storage.sync.set({ serverUrl: newUrl });
     } catch (error) {
       // Тихая обработка ошибок
-      return { success: false, error: 'Ошибка отправки сообщения' };
     }
+  }
+
+  getStatus() {
+    return {
+      connected: this.isConnected,
+      serverUrl: this.currentServerUrl,
+      reconnectAttempts: this.reconnectAttempts
+    };
   }
 }
 
-// Создаем экземпляр менеджера соединений
+// Создаем глобальный экземпляр менеджера соединений
 const connectionManager = new ConnectionManager();
 
-// Обработка сообщений от sidepanel
+// Инициализация при запуске расширения
+chrome.runtime.onStartup.addListener(() => {
+  connectionManager.init();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  connectionManager.init();
+});
+
+// Инициализируем сразу
+connectionManager.init();
+
+// Обработка сообщений от UI
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  try {
-    switch (message.type) {
-      case 'CHECK_CONNECTION_STATUS':
-        sendResponse({ connected: connectionManager.isConnected });
-        break;
-      case 'RETRY_CONNECTION':
-        connectionManager.connect();
+  switch (message.type) {
+    case 'CHECK_CONNECTION_STATUS':
+      sendResponse(connectionManager.getStatus());
+      break;
+      
+    case 'SEND_MESSAGE':
+      connectionManager.sendMessage(message.data).then(result => {
+        sendResponse(result);
+      });
+      return true; // Для асинхронного ответа
+      
+    case 'UPDATE_SERVER_URL':
+      connectionManager.updateServerUrl(message.url).then(() => {
         sendResponse({ success: true });
-        break;
-      case 'SEND_MESSAGE':
-        connectionManager.sendMessage(message.data)
-          .then(result => sendResponse(result))
-          .catch(() => sendResponse({ success: false, error: 'Ошибка обработки сообщения' }));
-        return true; // Для асинхронного ответа
-      default:
-        break;
+      });
+      return true; // Для асинхронного ответа
+      
+    case 'RETRY_CONNECTION':
+      connectionManager.reconnectAttempts = 0;
+      connectionManager.connect();
+      sendResponse({ success: true });
+      break;
+      
+    default:
+      break;
+  }
+});
+
+// Мониторинг изменений активных вкладок
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    if (tab) {
+      connectionManager.notifyUI('SITE_CHANGED', { 
+        url: tab.url, 
+        title: tab.title 
+      });
     }
   } catch (error) {
     // Тихая обработка ошибок
-    sendResponse({ success: false, error: 'Ошибка обработки сообщения' });
   }
-  return true; // Для асинхронного ответа
 });
 
-// Инициализация при установке/обновлении расширения
-chrome.runtime.onInstalled.addListener(() => {
-  // Устанавливаем начальный статус
-  connectionManager.updateBadgeStatus(false);
-
-  // Первая попытка подключения
-  connectionManager.connect();
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.active) {
+    connectionManager.notifyUI('SITE_CHANGED', { 
+      url: tab.url, 
+      title: tab.title 
+    });
+  }
 });
 
-// Инициализация при запуске браузера
-chrome.runtime.onStartup.addListener(() => {
-  // Первая попытка подключения
-  connectionManager.connect();
+// Обработка ошибок расширения
+chrome.runtime.onSuspend.addListener(() => {
+  connectionManager.stopKeepAlive();
+  if (connectionManager.websocket) {
+    connectionManager.websocket.close();
+  }
+});
+
+// Функция для тестирования соединения
+async function testConnection(url) {
+  try {
+    // Пробуем HTTP endpoint
+    const httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://');
+    const response = await fetch(`${httpUrl}/api/status`, {
+      method: 'GET',
+      timeout: 5000
+    });
+    
+    if (response.ok) {
+      return { success: true, method: 'http' };
+    }
+  } catch (httpError) {
+    // Пробуем WebSocket
+    try {
+      return new Promise((resolve) => {
+        const testWs = new WebSocket(url);
+        const timeout = setTimeout(() => {
+          testWs.close();
+          resolve({ success: false, error: 'Connection timeout' });
+        }, 5000);
+        
+        testWs.onopen = () => {
+          clearTimeout(timeout);
+          testWs.close();
+          resolve({ success: true, method: 'websocket' });
+        };
+        
+        testWs.onerror = () => {
+          clearTimeout(timeout);
+          resolve({ success: false, error: 'WebSocket connection failed' });
+        };
+      });
+    } catch (wsError) {
+      return { success: false, error: 'All connection methods failed' };
+    }
+  }
+  
+  return { success: false, error: 'Unknown error' };
+}
+
+// Экспортируем функцию тестирования для использования в UI
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'TEST_CONNECTION') {
+    testConnection(message.url).then(result => {
+      sendResponse(result);
+    });
+    return true;
+  }
 });

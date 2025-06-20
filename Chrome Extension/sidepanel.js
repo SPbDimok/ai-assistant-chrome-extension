@@ -1,33 +1,115 @@
-// AI Assistant SidePanel - JavaScript Logic v0.1.1
+// AI Assistant SidePanel - JavaScript Logic v0.1.2
+
+// Глобальные переменные
+let currentSiteName = 'AI Assistant';
+let autoThemeEnabled = false;
+let currentTheme = 'dark';
+
+// Функция для получения названия текущего сайта
+async function getCurrentSiteName() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.title) {
+      // Извлекаем домен из URL
+      const url = new URL(tab.url);
+      const domain = url.hostname.replace('www.', '');
+      
+      // Используем title страницы, но ограничиваем длину
+      let siteName = tab.title;
+      if (siteName.length > 30) {
+        siteName = siteName.substring(0, 27) + '...';
+      }
+      
+      return siteName;
+    }
+  } catch (error) {
+    // Тихая обработка ошибки
+  }
+  return 'AI Assistant';
+}
+
+// Функция для определения темы веб-страницы
+async function detectPageTheme() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return 'dark';
+
+    // Выполняем скрипт на странице для анализа темы
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        // Получаем цвет фона body
+        const bodyStyle = window.getComputedStyle(document.body);
+        const bgColor = bodyStyle.backgroundColor;
+        
+        // Извлекаем RGB значения
+        const rgbMatch = bgColor.match(/rgb\((\d+), (\d+), (\d+)\)/);
+        if (rgbMatch) {
+          const [, r, g, b] = rgbMatch.map(Number);
+          
+          // Вычисляем brightness
+          const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+          
+          return brightness < 128 ? 'dark' : 'light';
+        }
+        
+        // Fallback: проверяем системную тему
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+    });
+
+    return results[0]?.result || 'dark';
+  } catch (error) {
+    // Fallback на системную тему
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+}
+
+// Функция применения темы
+function applyTheme(theme) {
+  const body = document.body;
+  
+  if (theme === 'auto') {
+    // Для авто-темы определяем тему динамически
+    detectPageTheme().then(detectedTheme => {
+      body.setAttribute('data-theme', detectedTheme);
+      currentTheme = detectedTheme;
+    });
+  } else {
+    body.setAttribute('data-theme', theme);
+    currentTheme = theme;
+  }
+  
+  // Сохраняем выбранную тему
+  chrome.storage.sync.set({ selectedTheme: theme });
+}
 
 // Функция для переключения раскрывающихся блоков настроек
 function toggleSettingsItem(itemId) {
   const item = document.querySelector(`[data-item="${itemId}"]`);
   const details = document.getElementById(`${itemId}-details`);
   const arrow = item.querySelector('.expand-arrow');
-
+  
   if (!item || !details) return;
 
   const isExpanded = item.classList.contains('expanded');
 
-  // Закрываем все остальные блоки настроек (кроме changelog items)
-  if (!item.classList.contains('changelog-item')) {
-    document.querySelectorAll('.settings-item.expandable.expanded').forEach(expandedItem => {
-      if (expandedItem !== item && !expandedItem.classList.contains('changelog-item')) {
-        expandedItem.classList.remove('expanded');
-        const expandedDetails = expandedItem.querySelector('.item-details');
-        const expandedArrow = expandedItem.querySelector('.expand-arrow');
-        if (expandedDetails) {
-          expandedDetails.style.display = 'none';
-          expandedDetails.classList.remove('expanding');
-          expandedDetails.classList.add('collapsing');
-        }
-        if (expandedArrow) {
-          expandedArrow.style.transform = 'rotate(0deg)';
-        }
+  // Закрываем все остальные блоки
+  document.querySelectorAll('.settings-item.expandable.expanded').forEach(expandedItem => {
+    if (expandedItem !== item) {
+      expandedItem.classList.remove('expanded');
+      const expandedDetails = expandedItem.querySelector('.item-details');
+      const expandedArrow = expandedItem.querySelector('.expand-arrow');
+      if (expandedDetails) {
+        expandedDetails.style.display = 'none';
+        expandedDetails.classList.remove('expanding');
+        expandedDetails.classList.add('collapsing');
       }
-    });
-  }
+      if (expandedArrow) {
+        expandedArrow.style.transform = 'rotate(0deg)';
+      }
+    }
+  });
 
   if (isExpanded) {
     // Сворачиваем
@@ -52,12 +134,12 @@ function toggleSettingsItem(itemId) {
   }
 }
 
-// Функция для переключения MCP серверов на странице локальных MCP
+// Функция для переключения MCP серверов на странице настроек локальных MCP
 function toggleLocalMcpItem(mcpId) {
   const item = document.querySelector(`[data-mcp="${mcpId}"]`);
   const config = document.getElementById(`${mcpId}-config`);
-  const arrow = item.querySelector('.expand-arrow');
-
+  const arrow = item?.querySelector('.expand-arrow');
+  
   if (!item || !config) return;
 
   const isExpanded = item.classList.contains('expanded');
@@ -85,12 +167,12 @@ function toggleLocalMcpItem(mcpId) {
   }
 }
 
-// Функция для переключения changelog items
-function toggleChangelogItem(itemId) {
-  const item = document.querySelector(`[data-item="${itemId}"]`);
-  const details = item.querySelector('.changelog-details');
-  const arrow = item.querySelector('.changelog-arrow');
-
+// Функция для переключения элементов changelog
+function toggleChangelogItem(versionId) {
+  const item = document.querySelector(`[data-version="${versionId}"]`);
+  const details = item?.querySelector('.changelog-details');
+  const arrow = item?.querySelector('.expand-arrow');
+  
   if (!item || !details) return;
 
   const isExpanded = item.classList.contains('expanded');
@@ -112,7 +194,7 @@ function toggleChangelogItem(itemId) {
 function updateMcpToggleStatus(toggleId, status) {
   const toggle = document.getElementById(toggleId);
   const toggleSwitch = toggle?.parentElement?.querySelector('.toggle-switch');
-
+  
   if (!toggle || !toggleSwitch) return;
 
   // Сбрасываем все классы
@@ -137,37 +219,43 @@ function updateMcpToggleStatus(toggleId, status) {
 // Обработчик для переключателей MCP
 function handleMcpToggleChange(toggleElement) {
   const isChecked = toggleElement.checked;
-  const mcpId = toggleElement.id.replace('-toggle', '');
-
-  console.log(`MCP переключатель ${toggleElement.id}: ${isChecked ? 'включен' : 'отключен'}`);
-
+  const serverId = toggleElement.id;
+  
   if (isChecked) {
     // Попытка включения сервера (заглушка)
-    updateMcpToggleStatus(toggleElement.id, 'active');
-    console.log(`MCP сервер ${mcpId} активирован`);
+    updateMcpToggleStatus(serverId, 'active');
+    console.log(`MCP сервер ${serverId} включен (заглушка)`);
   } else {
     // Отключение сервера вручную
-    updateMcpToggleStatus(toggleElement.id, 'disabled');
-    console.log(`MCP сервер ${mcpId} отключен вручную`);
+    updateMcpToggleStatus(serverId, 'disabled');
+    console.log(`MCP сервер ${serverId} отключен вручную`);
   }
 }
 
+// Основной класс управления интерфейсом
 class SidePanelUI {
   constructor() {
     this.currentSection = 'chat';
     this.currentTab = 'chat';
     this.isConnected = false;
     this.isAuthenticated = false;
-    this.currentTheme = 'dark';
     this.init();
   }
 
-  init() {
+  async init() {
     this.bindElements();
     this.setupEventListeners();
-    this.loadSettings();
+    await this.loadSettings();
     this.checkConnectionStatus();
-    this.initTheme();
+    this.initMcpServers();
+    await this.updateSiteName();
+  }
+
+  async updateSiteName() {
+    currentSiteName = await getCurrentSiteName();
+    if (this.headerTitle && this.currentSection === 'chat') {
+      this.headerTitle.textContent = currentSiteName;
+    }
   }
 
   bindElements() {
@@ -200,15 +288,9 @@ class SidePanelUI {
     this.extractDataBtn = document.getElementById('extract-data-btn');
     this.summarizeBtn = document.getElementById('summarize-btn');
 
-    // Настройки темы
-    this.themeStatus = document.getElementById('theme-status');
-    this.themeOptions = document.querySelectorAll('.theme-option');
-
-    // Настройки аккаунта
+    // Настройки
     this.accountStatus = document.getElementById('account-status');
     this.authBtn = document.getElementById('auth-btn');
-
-    // Настройки сервера
     this.serverStatusIndicator = document.getElementById('server-status-indicator');
     this.serverStatusText = document.getElementById('server-status-text');
     this.serverUrlInput = document.getElementById('server-url-input');
@@ -220,6 +302,12 @@ class SidePanelUI {
     this.serverMcpCount = document.getElementById('server-mcp-count');
     this.refreshServerMcpBtn = document.getElementById('refresh-server-mcp');
     this.editLocalMcpBtn = document.getElementById('edit-local-mcp');
+
+    // Тема
+    this.currentThemeSpan = document.getElementById('current-theme');
+    this.themeOptions = document.querySelectorAll('input[name="theme"]');
+
+    // Локальные MCP
     this.addMcpBtn = document.getElementById('add-mcp-btn');
   }
 
@@ -249,11 +337,6 @@ class SidePanelUI {
     this.extractDataBtn?.addEventListener('click', () => this.extractData());
     this.summarizeBtn?.addEventListener('click', () => this.summarizePage());
 
-    // Настройки темы
-    this.themeOptions.forEach(option => {
-      option.addEventListener('click', () => this.setTheme(option.dataset.theme));
-    });
-
     // Настройки аккаунта
     this.authBtn?.addEventListener('click', () => this.toggleAuth());
 
@@ -263,7 +346,14 @@ class SidePanelUI {
 
     // MCP
     this.refreshServerMcpBtn?.addEventListener('click', () => this.refreshServerMcp());
-    this.editLocalMcpBtn?.addEventListener('click', () => this.showLocalMcpEditor());
+    this.editLocalMcpBtn?.addEventListener('click', () => this.showLocalMcpPage());
+
+    // Тема
+    this.themeOptions.forEach(option => {
+      option.addEventListener('change', () => this.handleThemeChange(option.value));
+    });
+
+    // Локальные MCP
     this.addMcpBtn?.addEventListener('click', () => this.addMcpServer());
 
     // Раскрывающиеся блоки настроек
@@ -279,24 +369,14 @@ class SidePanelUI {
       }
     });
 
-    // Раскрывающиеся блоки changelog
-    document.querySelectorAll('.changelog-item.expandable').forEach(item => {
-      const header = item.querySelector('.changelog-header');
-      if (header) {
-        header.addEventListener('click', () => {
-          const itemId = item.dataset.item;
-          if (itemId) {
-            toggleChangelogItem(itemId);
-          }
-        });
-      }
-    });
-
-    // Раскрывающиеся блоки локальных MCP
+    // Раскрывающиеся блоки MCP серверов
     document.querySelectorAll('.local-mcp-item.expandable').forEach(item => {
-      const header = item.querySelector('.mcp-header');
+      const header = item.querySelector('.mcp-item-header');
       if (header) {
-        header.addEventListener('click', () => {
+        header.addEventListener('click', (e) => {
+          // Не раскрываем блок при клике на переключатель
+          if (e.target.closest('.mcp-toggle')) return;
+          
           const mcpId = item.dataset.mcp;
           if (mcpId) {
             toggleLocalMcpItem(mcpId);
@@ -305,52 +385,77 @@ class SidePanelUI {
       }
     });
 
-    // MCP переключатели (ИСПРАВЛЕНО)
+    // MCP переключатели
     document.querySelectorAll('.mcp-toggle input[type="checkbox"]').forEach(toggle => {
       toggle.addEventListener('change', (e) => {
-        e.stopPropagation(); // Предотвращаем всплытие события
+        e.stopPropagation(); // Предотвращаем раскрытие блока
         handleMcpToggleChange(toggle);
       });
     });
 
-    // Кнопки удаления MCP (ИСПРАВЛЕНО)
+    // Кнопки удаления MCP
     document.querySelectorAll('.delete-mcp-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.deleteMcpServer(btn.dataset.mcp);
+        this.deleteMcpServer(btn);
       });
+    });
+
+    // Кнопки сохранения конфигурации MCP
+    document.querySelectorAll('.save-config-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.saveMcpConfig(btn);
+      });
+    });
+
+    // Раскрывающиеся элементы changelog
+    document.querySelectorAll('.changelog-item.expandable').forEach(item => {
+      const header = item.querySelector('.changelog-header');
+      if (header) {
+        header.addEventListener('click', () => {
+          const versionId = item.dataset.version;
+          if (versionId) {
+            toggleChangelogItem(versionId);
+          }
+        });
+      }
     });
   }
 
-  // === НАВИГАЦИЯ ===
+  // Инициализация MCP серверов
+  initMcpServers() {
+    // Устанавливаем начальные статусы MCP серверов
+    updateMcpToggleStatus('mcp-playwright-toggle', 'active');
+    updateMcpToggleStatus('mcp-scraper-toggle', 'disabled');
+  }
+
+  // Навигация
   showSettings() {
     this.currentSection = 'settings';
     this.updateUI();
   }
 
-  showLocalMcpEditor() {
+  showLocalMcpPage() {
     this.currentSection = 'local-mcp';
     this.updateUI();
   }
 
   handleBackButton() {
-    if (this.currentSection === 'settings') {
+    if (this.currentSection === 'settings' || this.currentSection === 'local-mcp') {
       this.currentSection = 'chat';
-      this.updateUI();
-    } else if (this.currentSection === 'local-mcp') {
-      this.currentSection = 'settings';
       this.updateUI();
     }
   }
 
   switchTab(tabName) {
     this.currentTab = tabName;
-
+    
     // Обновляем активную вкладку
     this.tabButtons.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabName);
     });
-
+    
     this.tabContents.forEach(content => {
       content.classList.toggle('active', content.id === tabName + '-tab');
     });
@@ -358,13 +463,13 @@ class SidePanelUI {
 
   updateUI() {
     // Показ/скрытие разделов
-    this.chatSection.classList.toggle('active', this.currentSection === 'chat');
-    this.settingsSection.classList.toggle('active', this.currentSection === 'settings');
-    this.localMcpSection.classList.toggle('active', this.currentSection === 'local-mcp');
+    this.chatSection?.classList.toggle('active', this.currentSection === 'chat');
+    this.settingsSection?.classList.toggle('active', this.currentSection === 'settings');
+    this.localMcpSection?.classList.toggle('active', this.currentSection === 'local-mcp');
 
     // Обновление заголовка и кнопок
     if (this.currentSection === 'chat') {
-      this.headerTitle.textContent = 'AI Assistant';
+      this.headerTitle.textContent = currentSiteName;
       this.backBtn.style.display = 'none';
       this.clearChatBtn.style.display = 'flex';
       this.settingsBtn.style.display = 'flex';
@@ -381,32 +486,7 @@ class SidePanelUI {
     }
   }
 
-  // === ТЕМА ===
-  initTheme() {
-    const savedTheme = localStorage.getItem('ai-assistant-theme') || 'dark';
-    this.setTheme(savedTheme);
-  }
-
-  setTheme(theme) {
-    this.currentTheme = theme;
-    document.body.setAttribute('data-theme', theme);
-    localStorage.setItem('ai-assistant-theme', theme);
-
-    // Обновляем активную опцию темы
-    this.themeOptions.forEach(option => {
-      option.classList.toggle('active', option.dataset.theme === theme);
-    });
-
-    // Обновляем статус темы
-    const themeNames = {
-      'light': 'Светлая',
-      'dark': 'Темная',
-      'auto': 'Авто'
-    };
-    this.themeStatus.textContent = themeNames[theme];
-  }
-
-  // === СТАТУС ПОДКЛЮЧЕНИЯ ===
+  // Статус подключения
   checkConnectionStatus() {
     chrome.runtime.sendMessage({type: 'CHECK_CONNECTION_STATUS'})
       .then(response => {
@@ -422,23 +502,23 @@ class SidePanelUI {
 
   updateConnectionStatus(connected) {
     this.isConnected = connected;
-
+    
     // Обновляем индикатор в шапке
-    this.connectionIndicator.classList.toggle('online', connected);
-    this.connectionIndicator.classList.toggle('offline', !connected);
+    this.connectionIndicator?.classList.toggle('online', connected);
+    this.connectionIndicator?.classList.toggle('offline', !connected);
 
     // Обновляем статус сервера в настройках
     if (this.serverStatusIndicator) {
       this.serverStatusIndicator.classList.toggle('online', connected);
       this.serverStatusIndicator.classList.toggle('offline', !connected);
     }
-
+    
     if (this.serverStatusText) {
       this.serverStatusText.textContent = connected ? 'Подключен' : 'Отключен';
     }
   }
 
-  // === ЧАТ ===
+  // Чат
   clearChat() {
     this.chatMessages.innerHTML = `
       <div class="welcome-message">
@@ -457,15 +537,43 @@ class SidePanelUI {
     this.chatInput.value = '';
 
     // Заглушка: отправка на сервер (Этап 1)
-    this.addMessageToChat('assistant', 'Функция отправки сообщений будет реализована на следующем этапе.');
+    setTimeout(() => {
+      this.addMessageToChat('assistant', 'Функция отправки сообщений будет реализована на следующем этапе.');
+    }, 1000);
   }
 
   addMessageToChat(sender, text) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${sender}`;
+    
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    
     messageDiv.innerHTML = `
       <div class="message-content">${text}</div>
-      <div class="message-time">${new Date().toLocaleTimeString()}</div>
+      <div class="message-footer">
+        <div class="message-time">${timeStr}</div>
+        ${sender === 'assistant' ? `
+          <div class="message-actions">
+            <button class="action-btn copy-btn" title="Скопировать">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" stroke-width="2"/>
+                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" stroke-width="2"/>
+              </svg>
+            </button>
+            <button class="action-btn good-btn" title="Хороший ответ">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <path d="M7 10v12M15 5.88L14 10h5.83a2 2 0 011.92 2.56l-2.33 8A2 2 0 0117.5 22H4a2 2 0 01-2-2v-8a2 2 0 012-2h2.76a2 2 0 001.79-1.11L12 2h0a3.13 3.13 0 013 3.88z" stroke="currentColor" stroke-width="2"/>
+              </svg>
+            </button>
+            <button class="action-btn bad-btn" title="Плохой ответ">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <path d="M17 14V2M9 18.12L10 14H4.17a2 2 0 01-1.92-2.56l2.33-8A2 2 0 016.5 2H20a2 2 0 012 2v8a2 2 0 01-2 2h-2.76a2 2 0 00-1.79 1.11L12 22h0a3.13 3.13 0 01-3-3.88z" stroke="currentColor" stroke-width="2"/>
+              </svg>
+            </button>
+          </div>
+        ` : ''}
+      </div>
     `;
 
     // Удаляем welcome сообщение если есть
@@ -475,14 +583,37 @@ class SidePanelUI {
     }
 
     this.chatMessages.appendChild(messageDiv);
-
-    // ИСПРАВЛЕНО: Безопасная прокрутка
+    
+    // Добавляем обработчики для кнопок действий
+    if (sender === 'assistant') {
+      const copyBtn = messageDiv.querySelector('.copy-btn');
+      const goodBtn = messageDiv.querySelector('.good-btn');
+      const badBtn = messageDiv.querySelector('.bad-btn');
+      
+      copyBtn?.addEventListener('click', () => this.copyMessage(text));
+      goodBtn?.addEventListener('click', () => this.rateMessage(true));
+      badBtn?.addEventListener('click', () => this.rateMessage(false));
+    }
+    
+    // Безопасная прокрутка
     if (this.chatMessages) {
       this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
     }
   }
 
-  // === ИНСТРУМЕНТЫ СТРАНИЦЫ ===
+  copyMessage(text) {
+    navigator.clipboard.writeText(text).then(() => {
+      // Заглушка: показать уведомление об успешном копировании
+      console.log('Сообщение скопировано');
+    });
+  }
+
+  rateMessage(isGood) {
+    // Заглушка: отправка рейтинга
+    console.log(`Сообщение оценено как: ${isGood ? 'хорошее' : 'плохое'}`);
+  }
+
+  // Инструменты для работы с страницей
   analyzePage() {
     this.addMessageToChat('system', 'Анализ страницы будет реализован на следующем этапе.');
   }
@@ -495,10 +626,10 @@ class SidePanelUI {
     this.addMessageToChat('system', 'Суммирование страницы будет реализовано на следующем этапе.');
   }
 
-  // === НАСТРОЙКИ АККАУНТА ===
+  // Настройки аккаунта
   toggleAuth() {
     this.isAuthenticated = !this.isAuthenticated;
-
+    
     if (this.isAuthenticated) {
       this.accountStatus.textContent = 'user@example.com';
       this.authBtn.textContent = 'Выйти';
@@ -510,27 +641,17 @@ class SidePanelUI {
     }
   }
 
-  // === НАСТРОЙКИ СЕРВЕРА ===
+  // Настройки сервера
   testServerConnection() {
-    const serverUrl = this.serverUrlInput.value.trim();
-    if (!serverUrl) return;
-
     this.testServerBtn.textContent = 'Тестирование...';
     this.testServerBtn.disabled = true;
-
-    // Заглушка: тест подключения
+    
+    // Заглушка: тестирование соединения
     setTimeout(() => {
       this.testServerBtn.textContent = 'Тест';
       this.testServerBtn.disabled = false;
-
-      // Имитируем результат теста
-      const isConnected = Math.random() > 0.5; // Случайный результат
-      this.updateConnectionStatus(isConnected);
-
-      const resultMessage = isConnected 
-        ? 'Подключение к серверу успешно!' 
-        : 'Не удалось подключиться к серверу';
-      this.addMessageToChat('system', resultMessage);
+      // Заглушка результата
+      console.log('Тест соединения завершен (заглушка)');
     }, 2000);
   }
 
@@ -538,90 +659,94 @@ class SidePanelUI {
     const newUrl = this.serverUrlInput.value.trim();
     if (newUrl) {
       chrome.storage.sync.set({serverUrl: newUrl});
-      this.addMessageToChat('system', `Адрес сервера сохранен: ${newUrl}`);
+      console.log('Настройки сервера сохранены');
     }
   }
 
-  // === MCP СЕРВЕРЫ ===
+  // Управление темой
+  handleThemeChange(theme) {
+    applyTheme(theme);
+    
+    // Обновляем отображение текущей темы
+    const themeNames = {
+      light: 'Светлая',
+      dark: 'Темная',
+      auto: 'Авто'
+    };
+    
+    if (this.currentThemeSpan) {
+      this.currentThemeSpan.textContent = themeNames[theme] || 'Темная';
+    }
+  }
+
+  // MCP серверы
   refreshServerMcp() {
     // Заглушка: обновление серверных MCP
-    console.log('Обновление статуса серверных MCP...');
-
-    // Имитируем обновление
-    const serverItems = document.querySelectorAll('#server-mcp-list .mcp-server-item');
-    serverItems.forEach((item, index) => {
-      const indicator = item.querySelector('.status-indicator');
+    const indicators = document.querySelectorAll('#server-mcp-list .status-indicator');
+    indicators.forEach(indicator => {
       indicator.classList.remove('online', 'offline');
       indicator.classList.add('offline');
-
-      // Случайно делаем некоторые серверы активными
-      if (Math.random() > 0.5) {
-        setTimeout(() => {
-          indicator.classList.remove('offline');
-          indicator.classList.add('online');
-        }, 500 + index * 200);
-      }
     });
-
-    // Обновляем счетчик
-    setTimeout(() => this.updateMcpCounts(), 1000);
+    
+    setTimeout(() => {
+      indicators[0]?.classList.add('online');
+    }, 1000);
   }
 
   addMcpServer() {
     // Заглушка: добавление MCP сервера
-    alert('Функция добавления MCP сервера будет реализована на следующем этапе');
+    console.log('Добавление MCP сервера будет реализовано на следующем этапе.');
   }
 
-  deleteMcpServer(mcpId) {
-    // ИСПРАВЛЕНО: Корректное удаление MCP сервера
-    const mcpItem = document.querySelector(`[data-mcp="${mcpId}"]`);
-    if (!mcpItem) return;
-
-    const serverName = mcpItem.querySelector('.mcp-name').textContent;
-
+  deleteMcpServer(button) {
+    const serverItem = button.closest('.local-mcp-item');
+    const serverName = serverItem.querySelector('.mcp-name').textContent;
+    
     if (confirm(`Удалить MCP сервер "${serverName}"?`)) {
-      mcpItem.remove();
-      this.updateMcpCounts();
-      console.log(`MCP сервер ${mcpId} удален`);
+      serverItem.remove();
+      console.log(`MCP сервер "${serverName}" удален`);
     }
   }
 
-  updateMcpCounts() {
-    const localActive = document.querySelectorAll('#local-mcp-list .status-indicator.online').length;
-    const localTotal = document.querySelectorAll('#local-mcp-list .mcp-server-item').length;
-    const serverActive = document.querySelectorAll('#server-mcp-list .status-indicator.online').length;
-    const serverTotal = document.querySelectorAll('#server-mcp-list .mcp-server-item').length;
-
-    if (this.localMcpCount) this.localMcpCount.textContent = `${localActive} из ${localTotal}`;
-    if (this.serverMcpCount) this.serverMcpCount.textContent = `${serverActive} из ${serverTotal}`;
+  saveMcpConfig(button) {
+    // Заглушка: сохранение конфигурации MCP
+    console.log('Конфигурация MCP сервера сохранена (заглушка)');
   }
 
-  // === ОБЩИЕ ФУНКЦИИ ===
+  // Закрытие панели
   closeSidePanel() {
     window.close();
   }
 
-  loadSettings() {
-    chrome.storage.sync.get(['serverUrl', 'isAuthenticated', 'theme'], (result) => {
-      if (result.serverUrl) {
+  // Загрузка настроек
+  async loadSettings() {
+    try {
+      const result = await chrome.storage.sync.get(['serverUrl', 'isAuthenticated', 'selectedTheme']);
+      
+      if (result.serverUrl && this.serverUrlInput) {
         this.serverUrlInput.value = result.serverUrl;
       }
-
+      
       if (result.isAuthenticated) {
         this.isAuthenticated = true;
         this.toggleAuth();
       }
-
-      if (result.theme) {
-        this.setTheme(result.theme);
+      
+      // Загружаем тему
+      const theme = result.selectedTheme || 'dark';
+      const themeOption = document.querySelector(`input[name="theme"][value="${theme}"]`);
+      if (themeOption) {
+        themeOption.checked = true;
+        applyTheme(theme);
       }
-    });
+    } catch (error) {
+      // Тихая обработка ошибок
+    }
   }
 }
 
 // Инициализация при загрузке страницы
 document.addEventListener('DOMContentLoaded', () => {
-  // ИСПРАВЛЕНО: Правильная инициализация
   window.sidePanelUI = new SidePanelUI();
 });
 
@@ -634,6 +759,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       case 'MESSAGE_FROM_SERVER':
         window.sidePanelUI.addMessageToChat('assistant', message.message.content || 'Получено сообщение от сервера');
+        break;
+      case 'SITE_CHANGED':
+        window.sidePanelUI.updateSiteName();
+        if (autoThemeEnabled) {
+          detectPageTheme().then(theme => applyTheme(theme));
+        }
         break;
       default:
         break;
